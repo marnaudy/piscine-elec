@@ -3,8 +3,8 @@
 void wait_500ms() {
 	//Calculate number of clock cycles to wait 500 ms
 	unsigned long int operations = F_CPU / 2;
-	unsigned long int loops = operations / 32;
-	//Each iteration through this loop lasts 32 CPU cycles
+	unsigned long int loops = operations / 33;
+	//Each iteration through this loop lasts 33 CPU cycles
 	while (loops) {
 		loops--;
 	}
