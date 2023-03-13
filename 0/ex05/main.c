@@ -19,27 +19,27 @@ int main() {
 	DDRD &= ~((1 << DDD2) | (1 << DDD4));
 	unsigned int n = 0;
 	display(n);
+	int sw1_state = (PIND & (1 << PD2));
+	int sw2_state = (PIND & (1 << PD4));
 	while (1) {
-		//Check input of SW1
-		if (!(PIND & (1 << PD2))) {
-			n++;
-			display(n);
-			//Wait 20ms to avoid bounce on push
-			_delay_ms(20);
-			// //Wait until button is released
-			while (!(PIND & (1 << PD2))) {}
-			// //Wait 20ms to avoid bounce on release
+		//Check change of state of SW1
+		if ((PIND & (1 << PD2)) != sw1_state) {
+			sw1_state = (PIND & (1 << PD2));
+			if (!sw1_state) {
+				n++;
+				display(n);
+			}
+			//Wait 20ms to avoid bounce
 			_delay_ms(20);
 		}
-		//Check input of SW2
-		if (!(PIND & (1 << PD4))) {
-			n--;
-			display(n);
-			//Wait 20ms to avoid bounce on push
-			_delay_ms(20);
-			//Wait until button is released
-			while (!(PIND & (1 << PD4))) {}
-			//Wait 20ms to avoid bounce on release
+		//Check change of state of SW2
+		if ((PIND & (1 << PD4)) != sw2_state) {
+			sw2_state = (PIND & (1 << PD4));
+			if (!sw2_state) {
+				n--;
+				display(n);
+			}
+			//Wait 20ms to avoid bounce
 			_delay_ms(20);
 		}
 	}
