@@ -1,10 +1,11 @@
 #include <avr/io.h>
+#include <util/delay.h>
 
 void wait_500ms() {
 	//Calculate number of clock cycles to wait 500 ms
 	unsigned long int operations = F_CPU / 2;
-	unsigned long int loops = operations / 2;
-	//Each iteration through this loop lasts 16 cycles
+	unsigned long int loops = operations / 32;
+	//Each iteration through this loop lasts 32 CPU cycles
 	while (loops) {
 		loops--;
 	}

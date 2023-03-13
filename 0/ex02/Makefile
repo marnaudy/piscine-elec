@@ -8,7 +8,7 @@ SRCS	=	main.c
 
 RM		=	rm -f
 
-F_CPU	=	1000000ul
+F_CPU	=	16000000ul
 
 all:		hex flash
 
