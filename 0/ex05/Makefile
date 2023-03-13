@@ -12,12 +12,13 @@ F_CPU	=	16000000ul
 
 all:		hex flash
 
-hex:		${SRCS}
-			avr-gcc ${SRCS} -DF_CPU=${F_CPU} -mmcu=atmega328p -O -o ${BIN}
-			avr-objcopy -j .text -j .data -O ihex ${BIN} ${HEX}
+hex:		${HEX}
 
-%.hex: %.bin
-	 $(OBJCOPY) -j .text -j .data -O ihex $< $@
+${BIN}:		${SRCS}
+			avr-gcc ${SRCS} -DF_CPU=${F_CPU} -mmcu=atmega328p -O -o ${BIN}
+
+${HEX}: 	${BIN}
+	 		avr-objcopy -j .text -j .data -O ihex ${BIN} ${HEX}
 
 flash:		${HEX}
 			avrdude -p m328p -b 115200 -c arduino -P /dev/ttyUSB0 -U flash:w:${HEX}:i
