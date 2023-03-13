@@ -1,5 +1,4 @@
 #include <avr/io.h>
-#include <util/delay.h>
 
 void wait_500ms() {
 	//Calculate number of clock cycles to wait 500 ms
