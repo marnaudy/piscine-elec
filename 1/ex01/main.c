@@ -9,7 +9,7 @@ int main() {
 	TCCR1B |= (1 << WGM13);
 	//The clock will be set at 62500Hz, 1 cycle = 1s so TOP (ICR1) should be half
 	ICR1 = 31250;
-	//Set Output Compare to 1/10th of TOP 
+	//Set Output Compare to 1/10th of TOP (counter will spend 1/10th of time below this value)
 	OCR1A = 3125;
 	//Set timer 1 to non inverted mode (clears OCA when counting up and sets when counting down)
 	TCCR1A |= (1 << COM1A1);
