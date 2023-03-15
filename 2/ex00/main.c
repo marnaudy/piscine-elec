@@ -11,7 +11,7 @@ ISR(INT0_vect) {
 	if (pressed)
 		PORTB ^= (1 << PB0);
 	//Wait for signal to stabilise
-	_delay_ms(20);
+	_delay_ms(1);
 	//Clear INT0 to remove any queued interrupts from bounce
 	EIFR |= (1 << INTF0);
 }
@@ -24,6 +24,6 @@ int main() {
 	//Enable external interrupt on INT0
 	EIMSK |= (1 << INT0);
 	//Enable interrupts globally on status register
-	SREG |= (1 << 7);
+	SREG |= (1 << SREG_I);
 	while (1) {}
 }
