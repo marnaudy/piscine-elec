@@ -1,6 +1,8 @@
 {
 	"files.associations": {
 		"*.embeddedhtml": "html",
-		"twi.h": "c"
+		"twi.h": "c",
+		"io.h": "c",
+		"delay.h": "c"
 	}
 }

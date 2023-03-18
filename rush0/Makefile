@@ -22,6 +22,7 @@ ${HEX}: 	${BIN}
 
 flash:		${HEX}
 			avrdude -p m328p -b 115200 -c arduino -P /dev/ttyUSB0 -U flash:w:${HEX}:i
+			avrdude -p m328p -b 115200 -c arduino -P /dev/ttyUSB1 -U flash:w:${HEX}:i
 
 clean:
 			${RM} ${BIN}
