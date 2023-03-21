@@ -22,9 +22,12 @@ enum g_stat {
 	s_error
 };
 
-volatile int nb_players = 2;
+volatile int nb_players = 3;
 volatile int nb_ready = 0;
 volatile enum g_stat game_status = lobby;
+volatile _Bool twi_busy = 0;
+_Bool sw1_pressed = 0;
+_Bool sw2_pressed = 0;
 
 void uart_init() {
 	//Enable transmitter on USART0
@@ -76,6 +79,7 @@ void i2c_stop() {
 	TWCR |= (1 << TWSTO);
 	//Clear TWINT bit (notifies module to continue)
 	TWCR |= (1 << TWINT);
+	twi_busy = 0;
 }
 
 void i2c_write(unsigned char data) {
@@ -119,6 +123,23 @@ void display(int n) {
 	PORTB |= n & 0b111;
 }
 
+void io_countdown(void) {
+	set_rgb('B');
+	int n = 15;
+	int i = 8;
+	while (i > 0 && game_status == countdown) {
+		display(n);
+		_delay_ms(500);
+		n -= i;
+		i /= 2;
+	}
+	display(n);
+	if (game_status != countdown)
+		return;
+	_delay_ms(500);
+	PORTB |= (1 << PB0) | (1 << PB1) | (1 << PB2) | (1 << PB4);
+}
+
 void io_win(void) {
 	//Set led GREEN
 	set_rgb('G');
@@ -155,22 +176,6 @@ void io_lose(void) {
 	}
 }
 
-void io_countdown(void) {
-	int n = 15;
-	int i = 8;
-	while (i > 0 && game_status == countdown) {
-		display(n);
-		_delay_ms(500);
-		n -= i;
-		i /= 2;
-	}
-	display(n);
-	if (game_status != countdown)
-		return;
-	_delay_ms(500);
-	PORTB |= (1 << PB0) | (1 << PB1) | (1 << PB2) | (1 << PB4);
-}
-
 void io_error(void) {
 	for (int i = 0; i < 3; i++)
 	{
@@ -186,6 +191,7 @@ void interrupt_init() {
 	SREG |= (1 << SREG_I);
 	//Enable interrupts on SW1 (INT0)
 	EIMSK |= (1 << INT0);
+	EICRA |= (1 << ISC00);
 	//Enable interrupts on SW2 (PCINT20)
 	PCICR |= (1 << PCIE2);
 	PCMSK2 |= (1 << PCINT20);
@@ -193,7 +199,7 @@ void interrupt_init() {
 	TWCR |= (1 << TWIE);
 }
 
-void send_status() {
+void print_twi_status() {
 	char *base = "0123456789ABCDEF";
 	int status = TW_STATUS;
 	uart_printstr("0x");
@@ -202,249 +208,7 @@ void send_status() {
 	uart_printstr("\r\n");
 }
 
-void n_ready(unsigned char c) {
-	if (c != nb_ready && c != ERROR)
-	{
-		uart_print_nl("Error nb players");
-		game_status = s_error;
-		TWCR |= (1 << TWSTA);
-	}
-	else if (c == ERROR)
-		game_status = r_error;
-	nb_ready++;
-}
-
-void p_lose(unsigned char c) {
-	if (c != LOSE && c != ERROR)
-	{
-		uart_print_nl("Errror countdown is down...");
-		game_status = s_error;
-		TWCR |= (1 << TWSTA);
-	}
-	else if (c == ERROR)
-		game_status = r_error;
-	else 
-		game_status = win;
-}
-
-void p_win(unsigned char c) {
-	if ( c != WIN && c != ERROR)
-	{
-		uart_print_nl("Error during game");
-		game_status = s_error;
-		TWCR |= (1 << TWSTA);
-	}
-	else if (c == ERROR)
-		game_status = r_error;
-	else 
-		game_status = lose;
-}
-
-void i2c_error(void) {
-	switch (TW_STATUS) {
-	case TW_START:
-		i2c_write(TW_WRITE);
-		break;
-	case TW_MT_SLA_ACK:
-		i2c_write(ERROR);
-		break;
-	case TW_MT_SLA_NACK:
-		uart_print_nl("Lobby empty error not received");
-		i2c_stop();
-		break;
-	case TW_MT_DATA_ACK:
-		uart_print_nl("Data has been acknowledged, weird...");
-		i2c_stop();
-		game_status = r_error;
-		break;
-	case TW_MT_DATA_NACK:
-		i2c_stop();
-		game_status = r_error;
-		break;
-	default:
-		uart_print_nl("Unexpected status : ");
-		send_status();
-		TWCR |= (1 << TWINT);
-		break;
-	}
-}
-
-void i2c_ready(void) {
-	switch (TW_STATUS) {
-	case TW_SR_GCALL_ACK:
-		TWCR &= ~(1 << TWEA);
-		TWCR |= (1 << TWINT);
-		break;
-	case TW_SR_GCALL_DATA_NACK:
-		if (nb_ready + 1 == nb_players) {
-			game_status = countdown;
-			set_rgb('B');
-		}
-		n_ready(TWDR);
-		TWCR |= (1 << TWEA) | (1 << TWINT);
-		break;
-	default:
-		uart_print_nl("Unexpected status : ");
-		send_status();
-		TWCR |= (1 << TWINT);
-		break;
-	}
-}
-
-void i2c_playing(void) {
-	switch (TW_STATUS) {
-	case TW_START:
-		i2c_write(TW_WRITE);
-		break;
-	case TW_MT_SLA_ACK:
-		i2c_write(WIN);
-		break;
-	case TW_MT_SLA_NACK:
-		uart_print_nl("Lobby empty during game");
-		game_status = s_error;
-		i2c_stop();
-		break;
-	case TW_MT_DATA_ACK:
-		uart_print_nl("Data has been acknowledged, weird...");
-		i2c_stop();
-		break;
-	case TW_MT_DATA_NACK:
-		game_status = win;
-		i2c_stop();
-		break;
-	case TW_SR_GCALL_ACK:
-	case TW_SR_ARB_LOST_GCALL_ACK:
-		TWCR &= ~(1 << TWEA);
-		TWCR |= (1 << TWINT);
-		break;
-	case TW_SR_GCALL_DATA_NACK:
-		p_win(TWDR);
-		TWCR |= (1 << TWEA) | (1 << TWINT);
-		break;
-	default:
-		uart_print_nl("Unexpected status : ");
-		send_status();
-		TWCR |= (1 << TWINT);
-		break;
-	}
-}
-
-void i2c_countdown(void)
-{
-	switch (TW_STATUS) {
-	case TW_START:
-		i2c_write(TW_WRITE);
-		break;
-	case TW_MT_SLA_ACK:
-		i2c_write(LOSE);
-		break;
-	case TW_MT_SLA_NACK:
-		uart_print_nl("Lobby empty during countdown");
-		game_status = s_error;
-		i2c_stop();
-		break;
-	case TW_MT_DATA_ACK:
-		uart_print_nl("Data has been acknowledged, weird...");
-		i2c_stop();
-		break;
-	case TW_MT_DATA_NACK:
-		game_status = lose;
-		i2c_stop();
-		break;
-	case TW_SR_GCALL_ACK:
-	case TW_SR_ARB_LOST_GCALL_ACK:
-		TWCR &= ~(1 << TWEA);
-		TWCR |= (1 << TWINT);
-		break;
-	case TW_SR_GCALL_DATA_NACK:
-		p_lose(TWDR);
-		TWCR |= (1 << TWEA) | (1 << TWINT);
-		break;
-	default:
-		uart_print_nl("Unexpected status : ");
-		send_status();
-		TWCR |= (1 << TWINT);
-		break;
-	}
-}
-
-void i2c_lobby() {
-	switch (TW_STATUS) {
-	case TW_START:
-		i2c_write(TW_WRITE);
-		break;
-	case TW_MT_SLA_ACK:
-		i2c_write(nb_ready);
-		break;
-	case TW_MT_SLA_NACK:
-		uart_print_nl("Lobby empty");
-		i2c_stop();
-		break;
-	case TW_MT_DATA_ACK:
-		uart_print_nl("Data has been acknowledged, weird...");
-		i2c_stop();
-		break;
-	case TW_MT_DATA_NACK:
-		nb_ready++;
-		set_rgb('G');
-		if (nb_ready == nb_players)
-		{
-			game_status = countdown;
-			set_rgb('B');
-		}
-		else
-			game_status = ready;
-		i2c_stop();
-		break;
-	case TW_SR_GCALL_ACK:
-	case TW_SR_ARB_LOST_GCALL_ACK:
-		TWCR &= ~(1 << TWEA);
-		TWCR |= (1 << TWINT);
-		break;
-	case TW_SR_GCALL_DATA_NACK:
-		n_ready(TWDR);
-		TWCR |= (1 << TWEA) | (1 << TWINT);
-		break;
-	default:
-		uart_print_nl("Unexpected status : ");
-		send_status();
-		TWCR |= (1 << TWINT);
-		break;
-	}
-}
-
-ISR(TWI_vect) {
-	send_status();
-	switch (game_status) {
-	case lobby:
-		i2c_lobby();
-		break;
-	case ready:
-		i2c_ready();
-		break;
-	case countdown:
-		i2c_countdown();
-		break;
-	case playing:
-		i2c_playing();
-		break;
-	case s_error:
-		i2c_error();
-		break;
-	default:
-		break;
-	}
-}
-
-ISR(INT0_vect) {
-	uart_print_nl("INT0 interrupt");
-	if (game_status == lobby || game_status == countdown || game_status == playing)
-		i2c_start();
-	_delay_ms(250);
-	EIFR |= (1 << INTF0);
-}
-
-ISR(PCINT2_vect) {
+void print_game_status() {
 	switch(game_status) {
 		case lobby:
 			uart_print_nl("Status = lobby");
@@ -473,12 +237,341 @@ ISR(PCINT2_vect) {
 	}
 }
 
-void reset_game(void) {
-
+void set_mode_lobby() {
 	PORTB &= ~((1 << PB0) | (1 << PB1) | (1 << PB2) | (1 << PB4));
-	set_rgb('R') ;
+	set_rgb('R');
 	nb_ready = 0;
 	game_status = lobby;
+}
+
+void set_mode_ready() {
+	set_rgb('G');
+	game_status = ready;
+}
+
+void set_mode_countdown() {
+	game_status = countdown;
+}
+
+void set_mode_playing() {
+	game_status = playing;
+}
+
+void set_mode_win() {
+	game_status = win;
+}
+
+void set_mode_lose() {
+	game_status = lose;
+}
+
+void set_mode_s_error() {
+	game_status = s_error;
+	if (!twi_busy) {
+		TWCR |= (1 << TWSTA);
+	}
+}
+
+void set_mode_r_error() {
+	game_status = r_error;
+}
+
+void n_ready(unsigned char c) {
+	if (c != nb_ready && c != ERROR)
+	{
+		uart_print_nl("Error nb players");
+		set_mode_s_error();
+	}
+	else if (c == ERROR)
+		set_mode_r_error();
+	nb_ready++;
+}
+
+void p_lose(unsigned char c) {
+	if (c != LOSE && c != ERROR)
+	{
+		uart_print_nl("Errror countdown is down...");
+		set_mode_s_error();
+	}
+	else if (c == ERROR)
+		set_mode_r_error();
+	else 
+		set_mode_win();
+}
+
+void p_win(unsigned char c) {
+	if ( c != WIN && c != ERROR)
+	{
+		uart_print_nl("Error during game");
+		set_mode_s_error();
+	}
+	else if (c == ERROR)
+		set_mode_r_error();
+	else 
+		set_mode_lose();
+}
+
+void i2c_lobby() {
+	switch (TW_STATUS) {
+	case TW_START:
+		twi_busy = 1;
+		i2c_write(TW_WRITE);
+		break;
+	case TW_MT_SLA_ACK:
+		i2c_write(nb_ready);
+		break;
+	case TW_MT_SLA_NACK:
+		uart_print_nl("Lobby empty");
+		i2c_stop();
+		break;
+	case TW_MT_DATA_ACK:
+		uart_print_nl("Data has been acknowledged, weird...");
+		i2c_stop();
+		set_mode_s_error();
+		break;
+	case TW_MT_DATA_NACK:
+		nb_ready++;
+		if (nb_ready == nb_players)
+			set_mode_countdown();
+		else
+			set_mode_ready();
+		i2c_stop();
+		break;
+	case TW_SR_GCALL_ACK:
+	case TW_SR_ARB_LOST_GCALL_ACK:
+		twi_busy = 1;
+		//Clear TWEA to nack data byte
+		TWCR &= ~(1 << TWEA);
+		TWCR |= (1 << TWINT);
+		break;
+	case TW_SR_GCALL_DATA_NACK:
+		twi_busy = 0;
+		TWCR |= (1 << TWEA) | (1 << TWINT);
+		n_ready(TWDR);
+		break;
+	default:
+		uart_print_nl("Unexpected status : ");
+		print_twi_status();
+		TWCR |= (1 << TWINT);
+		break;
+	}
+}
+
+void i2c_ready(void) {
+	switch (TW_STATUS) {
+	case TW_SR_GCALL_ACK:
+		twi_busy = 1;
+		TWCR &= ~(1 << TWEA);
+		TWCR |= (1 << TWINT);
+		break;
+	case TW_SR_GCALL_DATA_NACK:
+		if (nb_ready + 1 == nb_players) {
+			set_mode_countdown();
+		}
+		twi_busy = 0;
+		TWCR |= (1 << TWEA) | (1 << TWINT);
+		n_ready(TWDR);
+		break;
+	default:
+		uart_print_nl("Unexpected status : ");
+		print_twi_status();
+		TWCR |= (1 << TWINT);
+		break;
+	}
+}
+
+void i2c_countdown(void)
+{
+	switch (TW_STATUS) {
+	case TW_START:
+		twi_busy = 1;
+		i2c_write(TW_WRITE);
+		break;
+	case TW_MT_SLA_ACK:
+		i2c_write(LOSE);
+		break;
+	case TW_MT_SLA_NACK:
+		uart_print_nl("Lobby empty during countdown");
+		set_mode_s_error();
+		i2c_stop();
+		break;
+	case TW_MT_DATA_ACK:
+		uart_print_nl("Data has been acknowledged, weird...");
+		i2c_stop();
+		break;
+	case TW_MT_DATA_NACK:
+		set_mode_lose();
+		i2c_stop();
+		break;
+	case TW_SR_GCALL_ACK:
+	case TW_SR_ARB_LOST_GCALL_ACK:
+		TWCR &= ~(1 << TWEA);
+		TWCR |= (1 << TWINT);
+		twi_busy = 1;
+		break;
+	case TW_SR_GCALL_DATA_NACK:
+		twi_busy = 0;
+		TWCR |= (1 << TWEA) | (1 << TWINT);
+		p_lose(TWDR);
+		break;
+	default:
+		uart_print_nl("Unexpected status : ");
+		print_twi_status();
+		TWCR |= (1 << TWINT);
+		break;
+	}
+}
+
+void i2c_playing(void) {
+	switch (TW_STATUS) {
+	case TW_START:
+		twi_busy = 1;
+		i2c_write(TW_WRITE);
+		break;
+	case TW_MT_SLA_ACK:
+		i2c_write(WIN);
+		break;
+	case TW_MT_SLA_NACK:
+		uart_print_nl("Lobby empty during game");
+		set_mode_s_error();
+		i2c_stop();
+		break;
+	case TW_MT_DATA_ACK:
+		uart_print_nl("Data has been acknowledged, weird...");
+		i2c_stop();
+		break;
+	case TW_MT_DATA_NACK:
+		set_mode_win();
+		i2c_stop();
+		break;
+	case TW_SR_GCALL_ACK:
+	case TW_SR_ARB_LOST_GCALL_ACK:
+		twi_busy = 1;
+		TWCR &= ~(1 << TWEA);
+		TWCR |= (1 << TWINT);
+		break;
+	case TW_SR_GCALL_DATA_NACK:
+		TWCR |= (1 << TWEA) | (1 << TWINT);
+		twi_busy = 0;
+		p_win(TWDR);
+		break;
+	default:
+		uart_print_nl("Unexpected status : ");
+		print_twi_status();
+		TWCR |= (1 << TWINT);
+		break;
+	}
+}
+
+void i2c_error(void) {
+	switch (TW_STATUS) {
+	case TW_START:
+		twi_busy = 1;
+		i2c_write(TW_WRITE);
+		break;
+	case TW_MT_SLA_ACK:
+		i2c_write(ERROR);
+		break;
+	case TW_MT_SLA_NACK:
+		uart_print_nl("Lobby empty error not received");
+		i2c_stop();
+		break;
+	case TW_MT_DATA_ACK:
+		uart_print_nl("Data has been acknowledged, weird...");
+		i2c_stop();
+		set_mode_r_error();
+		break;
+	case TW_MT_DATA_NACK:
+		i2c_stop();
+		set_mode_r_error();
+		break;
+	case TW_SR_GCALL_ACK:
+	case TW_SR_ARB_LOST_GCALL_ACK:
+		twi_busy = 1;
+		TWCR &= ~(1 << TWEA);
+		TWCR |= (1 << TWINT);
+		break;
+	case TW_SR_GCALL_DATA_NACK:
+		//Set STA to broadcast error
+		if (TWDR == ERROR) {
+			set_mode_r_error();
+			TWCR |= (1 << TWEA) | (1 << TWINT);
+		}
+		else
+			TWCR |= (1 << TWEA) | (1 << TWSTA) | (1 << TWINT);
+		twi_busy = 0;
+		break;
+	default:
+		uart_print_nl("Unexpected status : ");
+		print_twi_status();
+		TWCR |= (1 << TWINT);
+		break;
+	}
+}
+
+void i2c_end() {
+	switch (TW_STATUS) {
+	case TW_SR_GCALL_ACK:
+	case TW_SR_ARB_LOST_GCALL_ACK:
+		twi_busy = 1;
+		TWCR &= ~(1 << TWEA);
+		TWCR |= (1 << TWINT);
+		break;
+	case TW_SR_GCALL_DATA_NACK:
+		if (TWDR == ERROR) {
+			set_mode_r_error();
+		}
+		TWCR |= (1 << TWEA) | (1 << TWINT);
+		twi_busy = 0;
+		break;
+	default:
+		uart_print_nl("Unexpected status : ");
+		print_twi_status();
+		TWCR |= (1 << TWINT);
+		break;
+	}
+}
+
+ISR(TWI_vect) {
+	switch (game_status) {
+	case lobby:
+		i2c_lobby();
+		break;
+	case ready:
+		i2c_ready();
+		break;
+	case countdown:
+		i2c_countdown();
+		break;
+	case playing:
+		i2c_playing();
+		break;
+	case s_error:
+		i2c_error();
+		break;
+	default:
+		i2c_end();
+		break;
+	}
+}
+
+ISR(INT0_vect) {
+	sw1_pressed = !sw1_pressed;
+	if (sw1_pressed) {
+		if ((game_status == lobby || game_status == countdown || game_status == playing) && !twi_busy)
+			i2c_start();
+	}
+	_delay_ms(20);
+	EIFR |= (1 << INTF0);
+}
+
+ISR(PCINT2_vect) {	
+	sw2_pressed = !sw2_pressed;
+	if (sw2_pressed) {
+		print_game_status();
+	}
+	_delay_ms(20);
+	PCIFR |= (1 << PCIF2);
 }
 
 int main() {
@@ -494,24 +587,24 @@ int main() {
 				break;
 			case countdown:
 				io_countdown();
-				if (game_status == countdown)
-					game_status = playing;
+				if (game_status == countdown && !twi_busy)
+					set_mode_playing();
 				break;
 			case playing:
 				break;
 			case win:
 				io_win();
-				reset_game();
+				set_mode_lobby();
 				break;
 			case lose:
 				io_lose();
-				reset_game();
+				set_mode_lobby();
 				break;
 			case s_error:
 				break;
 			case r_error:
 				io_error();
-				reset_game();
+				set_mode_lobby();
 				break;
 		}
 
