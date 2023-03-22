@@ -71,21 +71,19 @@ void adc_init() {
 	//ADC clock should be between 50kHz and 200kHz
 	//Set prescaler to 128 -> clock = 125kHz
 	ADCSRA |= (1 << ADPS2) | (1 << ADPS1)| (1 << ADPS0);
-	//Set trigger source to timer 1 compare B
-	ADCSRB |= (1 << ADTS2) | (1 << ADTS0);
+	//Set trigger source to timer 1 capture event
+	ADCSRB |= (1 << ADTS2) | (1 << ADTS1) | (1 << ADTS0);
 	//Enable ADC
 	ADCSRA |= (1 << ADEN);
 }
 
 void timer_init() {
-	//Set CTC mode
-	TCCR1B |= (1 << WGM12);
+	//Set CTC mode with ICR as top
+	TCCR1B |= (1 << WGM12) | (1 << WGM13);
 	//Set prescaler to 256x (62.5kHZ)
 	TCCR1B |= (1 << CS12);
-	//Set A and B -> match every 20ms (50Hz = 62.5Hz / 1250)
-	//ADC can only accept match B as trigger, A is set to reset the timer on match
-	OCR1A = 1250;
-	OCR1B = 1250;
+	//Set ICR (used as top) -> match every 20ms (50Hz = 62.5Hz / 1250)
+	ICR1 = 1250;
 }
 
 void rgb_init() {
@@ -128,6 +126,24 @@ void wheel(uint8_t pos) {
 	}
 }
 
+void display_gauge(uint8_t n) {
+	uint8_t leds = PORTB;
+	leds &= ~((1 << PB0) | (1 << PB1) | (1 << PB2) | (1 << PB4));
+	if (n >= 64) {
+		leds |= (1 << PB0);
+		if (n >= 128) {
+			leds |= (1 << PB1);
+			if (n >= 192) {
+				leds |= (1 << PB2);
+				if (n == 255) {
+					leds |= (1 << PB4);
+				}
+			}
+		}
+	}
+	PORTB = leds;
+}
+
 ISR(ADC_vect) {
 	//Get measurement
 	uint8_t pot = ADCH;
@@ -135,11 +151,14 @@ ISR(ADC_vect) {
 	uart_print_hex(pot);
 	uart_print_nl("");
 	wheel(pot);
+	display_gauge(pot);
 	//Clear timer1 interrupt flag
-	TIFR1 |= (1 << OCF1B);
+	TIFR1 |= (1 << ICF1);
 }
 
 int main() {
+	//Set LEDs 1, 2, 3, and 4 to output
+	DDRB |= (1 << DDB0) | (1 << DDB1) | (1 << DDB2) | (1 << DDB4);
 	rgb_init();
 	uart_init();
 	adc_init();
