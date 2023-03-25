@@ -45,14 +45,12 @@ void uart_print_hex(uint8_t n) {
 void i2c_init() {
 	//Set baudrate (with prescaler set to 1x)
 	TWBR = (uint8_t) (F_CPU / TWI_BAUDRATE / 2 - 8);
-	//Enable TWI module and acknowledgement
-	TWCR |= (1 << TWEN) | (1 << TWEA);
+	//Enable TWI module
+	TWCR |= (1 << TWEN);
 }
 
 int wait_i2c_ready() {
-	while (!(TWCR & (1 << TWINT))) {}
-	uart_print_hex(TW_STATUS);
-	uart_print_nl("");
+	while ((TWCR & (1 << TWINT)) == 0) {}
 	return (TW_STATUS);
 }
 
@@ -111,12 +109,9 @@ void toggle_led() {
 int main() {
 	uart_init();
 	i2c_init();
-	uart_print_nl("hi");
 	io_init();
-	uart_print_nl("hello");
 	while (1) {
-		toggle_led();
 		_delay_ms(500);
-	uart_print_nl("end of init");
+		toggle_led();
 	}
 }
