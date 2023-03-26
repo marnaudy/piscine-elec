@@ -18,10 +18,11 @@ enum mode_e {
 	humidity,
 	time,
 	date,
-	year
+	year,
+	start
 };
 
-volatile enum mode_e mode = potentiometer;
+volatile enum mode_e mode = start;
 volatile char display_str[5] = {'8', '8', '8', '8', '\0'};
 uint8_t display_position = 0;
 volatile _Bool sw1_pressed = 0;
@@ -157,15 +158,22 @@ uint16_t adc_get_conv() {
 //------------------------- SPI utils -------------------------
 
 void spi_master_init() {
-	//Set SCK, MOSI and SS to outputs
+	//Set SCK and MOSI and SS to outputs
 	DDRB |= (1 << DDB2) | (1 << DDB3) | (1 << DDB5);
-	// DDRB |= (1 << DDB3) | (1 << DDB5);
 	//Set SPI to master
 	SPCR |= (1 << MSTR);
 	//Set clock divider to 16 -> 1Mhz (acceptable range for LEDs 0.8-1.2MHz)
 	SPCR |= (1 << SPR0);
 	//Enable SPI
 	SPCR |= (1 << SPE);
+}
+
+void spi_enable() {
+	SPCR |= (1 << SPE);
+}
+
+void spi_disable() {
+	SPCR &= ~(1 << SPE);
 }
 
 void spi_transmit(uint8_t data) {
@@ -287,10 +295,13 @@ void timers_init() {
 	//Interrupts will be off for now
 	TCCR1B |= (1 << WGM12) | (1 << CS10) | (1 << CS12);
 	//Timer 2 triggers the update of the display value
-	//Set timer to normal mode with 1024x prescaler and interrupts
-	//This will generate interrupts at intervals of 16ms
-	TIMSK2 |= (1 << TOIE2);
+	//Set timer to normal mode with 1024x prescaler and no interrupts
+	//This will be used to generate interrupts at intervals of 16ms
 	TCCR2B |= (1 << CS20) | (1 << CS21) | (1 << CS22);
+}
+
+void start_value_update_timer() {
+	TIMSK2 |= (1 << TOIE2);
 }
 
 //------------------------- Display utils -------------------------
@@ -369,6 +380,7 @@ void set_mode_forty_two() {
 	display_str[2] = '2';
 	display_str[3] = '-';
 	colour = 'R';
+	spi_enable();
 	set_all_rgb(colour);
 	//Activate timer1 to generate interrupts every second
 	OCR1A = 15625;
@@ -381,6 +393,7 @@ void unset_mode_forty_two() {
 	//Turn off interrupts on timer 1
 	TIMSK1 &= ~(1 << OCIE1A);
 	set_all_rgb('0');
+	spi_disable();
 }
 
 void set_mode(enum mode_e new_mode) {
@@ -486,7 +499,7 @@ ISR(TIMER1_COMPA_vect) {
 
 ISR(INT0_vect) {
 	sw1_pressed = !sw1_pressed;
-	if (sw1_pressed) {
+	if (sw1_pressed && mode != start) {
 		enum mode_e new_mode;
 		if (mode == year)
 			new_mode = 0;
@@ -500,7 +513,7 @@ ISR(INT0_vect) {
 
 ISR(PCINT2_vect) {
 	sw2_pressed = !sw2_pressed;
-	if (sw2_pressed) {
+	if (sw2_pressed && mode != start) {
 		enum mode_e new_mode;
 		if (mode == 0)
 			new_mode = year;
@@ -516,14 +529,32 @@ ISR(BADISR_vect) {
 	uart_print_nl("Bad ISR vector");
 }
 
+void start_animation() {
+	PORTB |= ((1 << PB0) | (1 << PB1) | (1 << PB2) | (1 << PB4));
+	//Wait 3s
+	OCR1A = 46875;
+	TCNT1 = 0;
+	TIFR1 |= (1 << OCF1A);
+	while (!(TIFR1 & (1 << OCF1A))) {}
+	PORTB &= ~((1 << PB0) | (1 << PB1) | (1 << PB2) | (1 << PB4));
+	//Wait 1s
+	OCR1A = 15625;
+	TCNT1 = 0;
+	TIFR1 |= (1 << OCF1A);
+	while (!(TIFR1 & (1 << OCF1A))) {}
+}
+
 int main() {
 	uart_init();
 	i2c_init();
 	io_init();
-	timers_init();
 	adc_init();
 	spi_master_init();
 	set_all_rgb(0);
+	spi_disable();
+	timers_init();
+	start_animation();
 	set_mode(potentiometer);
+	start_value_update_timer();
 	while (1) {}
 }
