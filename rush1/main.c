@@ -181,6 +181,27 @@ void display_n_led(uint8_t n) {
 	PORTB |= n & 0b111;
 }
 
+_Bool is_sw3_pressed() {
+	_Bool is_pressed;
+	i2c_start();
+	//Address io expander
+	i2c_write(IO_EXP_ADDR | TW_WRITE);
+	//Send input0 command
+	i2c_write(0);
+	wait_i2c_ready();
+	i2c_start();
+	i2c_write(IO_EXP_ADDR | TW_READ);
+	wait_i2c_ready();
+	i2c_ack();
+	uint8_t input0 = i2c_read();
+	is_pressed = !(input0 & 1);
+	i2c_nack();
+	i2c_read();
+	//Set stop bit
+	TWCR |= (1 << TWSTO) | (1 << TWINT);
+	return (is_pressed);
+}
+
 //------------------------- Timers -------------------------
 
 void timers_init() {
@@ -284,6 +305,7 @@ ISR(TIMER0_OVF_vect) {
 	//Display current character on 7 segment display
 	//We first need to wipe the display to prevent ghosting
 	char c = display_str[display_position];
+	_Bool sw3_pressed = is_sw3_pressed();
 	i2c_start();
 	//Address io expander
 	i2c_write(IO_EXP_ADDR | TW_WRITE);
@@ -296,8 +318,15 @@ ISR(TIMER0_OVF_vect) {
 	i2c_write(IO_EXP_ADDR | TW_WRITE);
 	//Restart and display current digit
 	i2c_write(0x02);
-	//Set IO0 low on current digit CC
-	i2c_write((uint8_t) ~(1 << (4 + display_position)));
+	//Set IO0 low on current digit CC and LEDs if switches are pressed
+	uint8_t io0 = (uint8_t) ~(1 << (4 + display_position));
+	if (sw1_pressed)
+		io0 &= ~(1 << 3);
+	if (sw2_pressed)
+		io0 &= ~(1 << 2);
+	if (sw3_pressed)
+		io0 &= ~(1 << 1);
+	i2c_write(io0);
 	//Set IO1 to display digit
 	i2c_write(get_segment_digit(c));
 	i2c_stop();
@@ -326,7 +355,7 @@ ISR(INT0_vect) {
 			new_mode = mode + 1;
 		set_mode(new_mode);
 	}
-	_delay_ms(5);
+	_delay_ms(10);
 	EIFR |= (1 << INTF0);
 }
 
@@ -340,7 +369,7 @@ ISR(PCINT2_vect) {
 			new_mode = mode - 1;
 		set_mode(new_mode);
 	}
-	_delay_ms(5);
+	_delay_ms(10);
 	PCIFR |= (1 << PCIF2);
 }
 
