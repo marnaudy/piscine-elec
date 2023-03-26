@@ -26,6 +26,7 @@ volatile char display_str[5] = {'8', '8', '8', '8', '\0'};
 uint8_t display_position = 0;
 volatile _Bool sw1_pressed = 0;
 volatile _Bool sw2_pressed = 0;
+volatile char colour = 'R';
 
 //------------------------- UART utils -------------------------
 
@@ -75,6 +76,13 @@ void uart_print_dec(uint16_t n) {
 		i--;
 	}
 	uart_printstr(&output[i]);
+}
+
+void uart_print_bin(uint8_t n) {
+	uart_printstr("0b");
+	for (int i = 7; i >= 0; i--) {
+		uart_tx(((n >> i) & 1) + '0');
+	}
 }
 
 //------------------------- I2C utils -------------------------
@@ -146,6 +154,46 @@ uint16_t adc_get_conv() {
 	return (ADC);
 }
 
+//------------------------- SPI utils -------------------------
+
+void spi_master_init() {
+	//Set SCK, MOSI and SS to outputs
+	DDRB |= (1 << DDB2) | (1 << DDB3) | (1 << DDB5);
+	// DDRB |= (1 << DDB3) | (1 << DDB5);
+	//Set SPI to master
+	SPCR |= (1 << MSTR);
+	//Set clock divider to 16 -> 1Mhz (acceptable range for LEDs 0.8-1.2MHz)
+	SPCR |= (1 << SPR0);
+	//Enable SPI
+	SPCR |= (1 << SPE);
+}
+
+void spi_transmit(uint8_t data) {
+	SPDR = data;
+	//Wait for transmission to finish
+	while (!(SPSR & (1 << SPIF))) {}
+}
+
+void set_spi_rgb(uint8_t r, uint8_t g, uint8_t b) {
+	//Max is 31
+	uint8_t brightness = 1;
+	//Transmit four bytes of 0s
+	for (int i = 0; i < 4; i++) {
+		spi_transmit(0);
+	}
+	//Transmit four LED frames
+	for (int i = 0; i < 3; i++) {
+		spi_transmit(0b11100000 | brightness);
+		spi_transmit(b);
+		spi_transmit(g);
+		spi_transmit(r);
+	}
+	//Transmit four bytes of 1s
+	for (int i = 0; i < 4; i++) {
+		spi_transmit(255);
+	}
+}
+
 //------------------------- GPIO -------------------------
 
 void io_init() {
@@ -202,6 +250,29 @@ _Bool is_sw3_pressed() {
 	return (is_pressed);
 }
 
+void set_all_rgb(char c) {
+	uint8_t port_d_save = PORTD;
+	port_d_save &= ~((1 << PD3) | (1 << PD5) | (1 << PD6));
+	switch (c) {
+	case 'R':
+		set_spi_rgb(255, 0, 0);
+		PORTD = port_d_save | (1 << PD5);
+		break;
+	case 'G':
+		set_spi_rgb(0, 255, 0);
+		PORTD = port_d_save | (1 << PD6);
+		break;
+	case 'B':
+		set_spi_rgb(0, 0, 255);
+		PORTD = port_d_save | (1 << PD3);
+		break;
+	default:
+		set_spi_rgb(0, 0, 0);
+		PORTD = port_d_save;
+		break;
+	}
+}
+
 //------------------------- Timers -------------------------
 
 void timers_init() {
@@ -211,6 +282,10 @@ void timers_init() {
 	SREG |= (1 << SREG_I);
 	TIMSK0 |= (1 << TOIE0);
 	TCCR0B |= (1 << CS01) | (1 << CS00);
+	//Timer 1 will be used to control RGB effects
+	//Set to CTC mode with OCR1A as top and 1024x prescaler
+	//Interrupts will be off for now
+	TCCR1B |= (1 << WGM12) | (1 << CS10) | (1 << CS12);
 	//Timer 2 triggers the update of the display value
 	//Set timer to normal mode with 1024x prescaler and interrupts
 	//This will generate interrupts at intervals of 16ms
@@ -258,23 +333,62 @@ void uint_display(uint16_t n) {
 //------------------------- Mode settings -------------------------
 
 void set_mode_potentiometer() {
+	//Select AVcc as Vref
+	ADMUX &= ~(1 << REFS1);
 	//Select potentiometer in ADC
 	ADMUX &= ~((1 << MUX0) | (1 << MUX1) | (1 << MUX2) | (1 << MUX3));
 }
 
 void set_mode_photoresistor() {
+	//Select AVcc as Vref
+	ADMUX &= ~(1 << REFS1);
 	//Select photoresistor in ADC
 	ADMUX &= ~((1 << MUX0) | (1 << MUX1) | (1 << MUX2) | (1 << MUX3));
 	ADMUX |= (1 << MUX0);
 }
 
 void set_mode_thermistor() {
+	//Select AVcc as Vref
+	ADMUX &= ~(1 << REFS1);
 	//Select thermistor in ADC
 	ADMUX &= ~((1 << MUX0) | (1 << MUX1) | (1 << MUX2) | (1 << MUX3));
 	ADMUX |= (1 << MUX1);
 }
 
+void set_mode_temp_int() {
+	//Select 1.1V as Vref
+	ADMUX |= (1 << REFS1);
+	//Select internal temp in ADC
+	ADMUX &= ~((1 << MUX0) | (1 << MUX1) | (1 << MUX2) | (1 << MUX3));
+	ADMUX |= (1 << MUX3);
+}
+
+void set_mode_forty_two() {
+	display_str[0] = '-';
+	display_str[1] = '4';
+	display_str[2] = '2';
+	display_str[3] = '-';
+	colour = 'R';
+	set_all_rgb(colour);
+	//Activate timer1 to generate interrupts every second
+	OCR1A = 15625;
+	TIFR1 |= (1 << OCF1A);
+	TIMSK1 |= (1 << OCIE1A);
+	TCNT1 = 0;
+}
+
+void unset_mode_forty_two() {
+	//Turn off interrupts on timer 1
+	TIMSK1 &= ~(1 << OCIE1A);
+	set_all_rgb('0');
+}
+
 void set_mode(enum mode_e new_mode) {
+	switch (mode) {
+	case forty_two:
+		unset_mode_forty_two();
+		break;
+	}
 	display_n_led(new_mode);
 	switch (new_mode) {
 	case potentiometer:
@@ -285,6 +399,12 @@ void set_mode(enum mode_e new_mode) {
 		break;
 	case thermistor:
 		set_mode_thermistor();
+		break;
+	case temp_int:
+		set_mode_temp_int();
+		break;
+	case forty_two:
+		set_mode_forty_two();
 		break;
 	default:
 		uint_display(new_mode);
@@ -297,6 +417,11 @@ void set_mode(enum mode_e new_mode) {
 
 void update_value_adc() {
 	uint_display(adc_get_conv());
+}
+
+void update_value_temp_int() {
+	uint16_t adc_value = adc_get_conv();
+	uint_display(adc_value - 342);
 }
 
 //------------------------- Interrupts -------------------------
@@ -342,7 +467,21 @@ ISR(TIMER2_OVF_vect) {
 	case thermistor:
 		update_value_adc();
 		break;
+	case temp_int:
+		update_value_temp_int();
+		break;
 	}
+}
+
+ISR(TIMER1_COMPA_vect) {
+	//Select next rgb effect
+	if (colour == 'R')
+		colour = 'G';
+	else if (colour == 'G')
+		colour = 'B';
+	else if (colour == 'B')
+		colour = 'R';
+	set_all_rgb(colour);
 }
 
 ISR(INT0_vect) {
@@ -383,6 +522,8 @@ int main() {
 	io_init();
 	timers_init();
 	adc_init();
+	spi_master_init();
+	set_all_rgb(0);
 	set_mode(potentiometer);
 	while (1) {}
 }
