@@ -28,6 +28,7 @@ uint8_t display_position = 0;
 volatile _Bool sw1_pressed = 0;
 volatile _Bool sw2_pressed = 0;
 volatile char colour = 'R';
+volatile uint8_t rgb_position = 0;
 
 //------------------------- UART utils -------------------------
 
@@ -199,6 +200,19 @@ void set_spi_rgb(uint8_t r, uint8_t g, uint8_t b) {
 	//Transmit four bytes of 1s
 	for (int i = 0; i < 4; i++) {
 		spi_transmit(255);
+	}
+}
+
+void wheel_spi(uint8_t pos) {
+	pos = 255 - pos;
+	if (pos < 85) {
+		set_spi_rgb(255 - pos * 3, 0, pos * 3);
+	} else if (pos < 170) {
+		pos = pos - 85;
+		set_spi_rgb(0, pos * 3, 255 - pos * 3);
+	} else {
+		pos = pos - 170;
+		set_spi_rgb(pos * 3, 255 - pos * 3, 0);
 	}
 }
 
@@ -389,7 +403,21 @@ void set_mode_forty_two() {
 	TCNT1 = 0;
 }
 
-void unset_mode_forty_two() {
+void set_mode_rainbow() {
+	display_str[0] = '-';
+	display_str[1] = '4';
+	display_str[2] = '2';
+	display_str[3] = '-';
+	rgb_position = 0;
+	spi_enable();
+	//Activate timer1 to generate interrupts so full cycle lasts ~4s
+	OCR1A = 255;
+	TIFR1 |= (1 << OCF1A);
+	TIMSK1 |= (1 << OCIE1A);
+	TCNT1 = 0;
+}
+
+void unset_mode_rgb() {
 	//Turn off interrupts on timer 1
 	TIMSK1 &= ~(1 << OCIE1A);
 	set_all_rgb('0');
@@ -399,7 +427,8 @@ void unset_mode_forty_two() {
 void set_mode(enum mode_e new_mode) {
 	switch (mode) {
 	case forty_two:
-		unset_mode_forty_two();
+	case rainbow:
+		unset_mode_rgb();
 		break;
 	}
 	display_n_led(new_mode);
@@ -418,6 +447,9 @@ void set_mode(enum mode_e new_mode) {
 		break;
 	case forty_two:
 		set_mode_forty_two();
+		break;
+	case rainbow:
+		set_mode_rainbow();
 		break;
 	default:
 		uint_display(new_mode);
@@ -487,14 +519,19 @@ ISR(TIMER2_OVF_vect) {
 }
 
 ISR(TIMER1_COMPA_vect) {
-	//Select next rgb effect
-	if (colour == 'R')
-		colour = 'G';
-	else if (colour == 'G')
-		colour = 'B';
-	else if (colour == 'B')
-		colour = 'R';
-	set_all_rgb(colour);
+	if (mode == forty_two) {
+		//Select next rgb effect
+		if (colour == 'R')
+			colour = 'G';
+		else if (colour == 'G')
+			colour = 'B';
+		else if (colour == 'B')
+			colour = 'R';
+		set_all_rgb(colour);
+	} else {
+		wheel_spi(rgb_position);
+		rgb_position++;
+	}
 }
 
 ISR(INT0_vect) {
