@@ -25,7 +25,7 @@ enum mode_e {
 
 volatile enum mode_e mode = start;
 volatile char display_str[5] = {'8', '8', '8', '8', '\0'};
-volatile uint8_t decimal_mask = 0;
+volatile uint8_t decimal_mask = 0b1111;
 uint8_t display_position = 0;
 volatile _Bool sw1_pressed = 0;
 volatile _Bool sw2_pressed = 0;
@@ -351,6 +351,8 @@ uint8_t get_segment_char(char c) {
 		return (0b00111001);
 	case 'F':
 		return (0b01110001);
+	case 'H':
+		return (0b01110110);
 	}
 	return(0);
 }
@@ -452,6 +454,7 @@ float aht_get_humidity() {
 //------------------------- Mode settings -------------------------
 
 void set_mode_potentiometer() {
+	decimal_mask = 0;
 	//Select AVcc as Vref
 	ADMUX &= ~(1 << REFS1);
 	//Select potentiometer in ADC
@@ -666,6 +669,8 @@ ISR(TIMER1_COMPA_vect) {
 			display_str[0] = 'F';
 	} else if (mode == humidity) {
 		float_display(aht_get_humidity());
+		if (display_str[0] == ' ')
+			display_str[0] = 'H';
 	}
 }
 
