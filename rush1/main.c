@@ -5,6 +5,7 @@
 
 #define TWI_BAUDRATE 100000ul
 #define IO_EXP_ADDR 0b01000000
+#define AHT_ADDR 0b01110000
 
 enum mode_e {
 	potentiometer,
@@ -24,11 +25,13 @@ enum mode_e {
 
 volatile enum mode_e mode = start;
 volatile char display_str[5] = {'8', '8', '8', '8', '\0'};
+volatile uint8_t decimal_mask = 0;
 uint8_t display_position = 0;
 volatile _Bool sw1_pressed = 0;
 volatile _Bool sw2_pressed = 0;
 volatile char colour = 'R';
 volatile uint8_t rgb_position = 0;
+uint8_t value_refresh_counter = 0;
 
 //------------------------- UART utils -------------------------
 
@@ -320,7 +323,7 @@ void start_value_update_timer() {
 
 //------------------------- Display utils -------------------------
 
-uint8_t get_segment_digit(char c) {
+uint8_t get_segment_char(char c) {
 	switch (c) {
 	case '0':
 		return (0b00111111);
@@ -344,6 +347,10 @@ uint8_t get_segment_digit(char c) {
 		return (0b01101111);
 	case '-':
 		return (0b01000000);
+	case 'C':
+		return (0b00111001);
+	case 'F':
+		return (0b01110001);
 	}
 	return(0);
 }
@@ -353,6 +360,93 @@ void uint_display(uint16_t n) {
 		display_str[i] = n % 10 + '0';
 		n /= 10;
 	}
+}
+
+void float_display(float f) {
+	_Bool is_negative = 0;
+	if (f < 0) {
+		is_negative = 1;
+		f = -f;
+	}
+	if ((int) (f / 100))
+		display_str[0] = (int) (f / 100) % 10 + '0';
+	else
+		display_str[0] = ' ';
+	if ((int) (f / 10))
+		display_str[1] = (int) (f / 10) % 10 + '0';
+	else
+		display_str[0] = ' ';
+	display_str[2] = (int) f % 10 + '0';
+	display_str[3] = (int) (f * 10) % 10 + '0';
+	if (is_negative)
+		display_str[0] = '-';
+}
+
+//------------------------- AHT utils -------------------------
+
+void aht_request_measurement() {
+	//Send measurement command
+	i2c_start();
+	i2c_write(AHT_ADDR | TW_WRITE);
+	i2c_write(0xAC);
+	i2c_write(0x33);
+	i2c_write(0);
+	i2c_stop();
+	//Generate interrupt in 80ms when measurement is ready
+	OCR1A = 1250;
+	TIFR1 |= (1 << OCF1A);
+	TIMSK1 |= (1 << OCIE1A);
+	TCNT1 = 0;
+}
+
+uint64_t aht_get_value() {
+	//Disable interrupts on timer1
+	TIMSK1 &= ~(1 << OCIE1A);
+	uint64_t res = 0;
+	i2c_start();
+	i2c_write(AHT_ADDR | TW_READ);
+	wait_i2c_ready();
+	i2c_ack();
+	uint8_t status = i2c_read();
+	if ((status & (1 << 7))) {
+		uart_print_nl("AHT didn't wait long enough");
+		i2c_nack();
+		i2c_stop();
+		return (0);
+	}
+	if (!(status & (1 << 3)))
+		uart_print_nl("AHT not calibrated");
+	for (int i = 4; i >= 0; i--) {
+		if (i != 0)
+			i2c_ack();
+		else
+			i2c_nack();
+		uint8_t d = i2c_read();
+		res = res << 8;
+		res |= d;
+	}
+	i2c_stop();
+	return (res);
+}
+
+float aht_get_temp_c() {
+	float res;
+	uint64_t data = aht_get_value();
+	data &= 0xFFFFF;
+	res = ((float) data) / 0x100000;
+	return (res * 200 - 50);
+}
+
+float aht_get_temp_f() {
+	return (aht_get_temp_c() * 9 / 5 + 32);
+}
+
+float aht_get_humidity() {
+	float res;
+	uint64_t data = aht_get_value();
+	data = data >> 20;
+	res = ((float) data) / 0x100000;
+	return (res * 100);
 }
 
 //------------------------- Mode settings -------------------------
@@ -424,11 +518,24 @@ void unset_mode_rgb() {
 	spi_disable();
 }
 
+void set_decimal_point() {
+	decimal_mask = 0b0100;
+}
+
+void unset_decimal_point() {
+	decimal_mask = 0;
+}
+
 void set_mode(enum mode_e new_mode) {
 	switch (mode) {
 	case forty_two:
 	case rainbow:
 		unset_mode_rgb();
+		break;
+	case temp_c:
+	case temp_f:
+	case humidity:
+		unset_decimal_point();
 		break;
 	}
 	display_n_led(new_mode);
@@ -450,6 +557,11 @@ void set_mode(enum mode_e new_mode) {
 		break;
 	case rainbow:
 		set_mode_rainbow();
+		break;
+	case temp_c:
+	case temp_f:
+	case humidity:
+		set_decimal_point();
 		break;
 	default:
 		uint_display(new_mode);
@@ -498,7 +610,10 @@ ISR(TIMER0_OVF_vect) {
 		io0 &= ~(1 << 1);
 	i2c_write(io0);
 	//Set IO1 to display digit
-	i2c_write(get_segment_digit(c));
+	if (decimal_mask & (1 << display_position))
+		i2c_write(get_segment_char(c) | (1 << 7));
+	else
+		i2c_write(get_segment_char(c));
 	i2c_stop();
 	display_position++;
 	if (display_position == 4)
@@ -506,15 +621,25 @@ ISR(TIMER0_OVF_vect) {
 }
 
 ISR(TIMER2_OVF_vect) {
-	switch (mode) {
-	case potentiometer:
-	case photoresistor:
-	case thermistor:
-		update_value_adc();
-		break;
-	case temp_int:
-		update_value_temp_int();
-		break;
+	if (value_refresh_counter == 9) {
+		switch (mode) {
+		case potentiometer:
+		case photoresistor:
+		case thermistor:
+			update_value_adc();
+			break;
+		case temp_int:
+			update_value_temp_int();
+			break;
+		case temp_c:
+		case temp_f:
+		case humidity:
+			aht_request_measurement();
+			break;
+		}
+		value_refresh_counter = 0;
+	} else {
+		value_refresh_counter++;
 	}
 }
 
@@ -528,9 +653,19 @@ ISR(TIMER1_COMPA_vect) {
 		else if (colour == 'B')
 			colour = 'R';
 		set_all_rgb(colour);
-	} else {
+	} else if (mode == rainbow) {
 		wheel_spi(rgb_position);
 		rgb_position++;
+	} else if (mode == temp_c) {
+		float_display(aht_get_temp_c());
+		if (display_str[0] == ' ')
+			display_str[0] = 'C';
+	} else if (mode == temp_f) {
+		float_display(aht_get_temp_f());
+		if (display_str[0] == ' ')
+			display_str[0] = 'F';
+	} else if (mode == humidity) {
+		float_display(aht_get_humidity());
 	}
 }
 
