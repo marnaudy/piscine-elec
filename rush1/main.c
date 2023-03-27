@@ -485,9 +485,10 @@ void get_time() {
 	read_byte = i2c_read();
 	time.day[0] = ((read_byte >> 4) & 0b11) + '0';
 	time.day[1] = (read_byte & 0b1111) + '0';
-	i2c_ack();
 	//Weekday byte is unused
+	i2c_ack();
 	i2c_read();
+	//Continue reading month
 	i2c_ack();
 	read_byte = i2c_read();
 	time.month[0] = ((read_byte >> 4) & 0b1) + '0';
@@ -574,6 +575,30 @@ void increment_time() {
 		time.year[0] = '0';
 		time.century = !time.century;
 	}
+}
+
+void set_time() {
+	uint8_t write_byte;
+	//Send word address of seconds
+	i2c_start();
+	i2c_write(RTC_ADDR | TW_WRITE);
+	i2c_write(0x02);
+	write_byte = ((time.sec[0] - '0') << 4) | (time.sec[1] - '0') | 0b10000000;
+	i2c_write(write_byte);
+	write_byte = ((time.min[0] - '0') << 4) | (time.min[1] - '0');
+	i2c_write(write_byte);
+	write_byte = ((time.hour[0] - '0') << 4) | (time.hour[1] - '0');
+	i2c_write(write_byte);
+	write_byte = ((time.day[0] - '0') << 4) | (time.day[1] - '0');
+	i2c_write(write_byte);
+	//Weekday byte is unused
+	i2c_write(0);
+	write_byte = ((time.month[0] - '0') << 4) | (time.month[1] - '0');
+	write_byte |= time.century << 7;
+	i2c_write(write_byte);
+	write_byte = ((time.year[0] - '0') << 4) | (time.year[1] - '0');
+	i2c_write(write_byte);
+	i2c_stop();
 }
 
 //------------------------- Update display value -------------------------
