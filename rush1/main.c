@@ -6,6 +6,7 @@
 #define TWI_BAUDRATE 100000ul
 #define IO_EXP_ADDR 0b01000000
 #define AHT_ADDR 0b01110000
+#define RTC_ADDR 0b10100010
 
 enum mode_e {
 	potentiometer,
@@ -17,11 +18,21 @@ enum mode_e {
 	temp_c,
 	temp_f,
 	humidity,
-	time,
+	hour,
 	date,
 	year,
 	start
 };
+
+typedef struct time_s {
+	char sec[2];
+	char min[2];
+	char hour[2];
+	char day[2];
+	char month[2];
+	char year[2];
+	_Bool century;
+} time_t;
 
 volatile enum mode_e mode = start;
 volatile char display_str[5] = {'8', '8', '8', '8', '\0'};
@@ -32,6 +43,7 @@ volatile _Bool sw2_pressed = 0;
 volatile char colour = 'R';
 volatile uint8_t rgb_position = 0;
 uint8_t value_refresh_counter = 0;
+time_t time;
 
 //------------------------- UART utils -------------------------
 
@@ -106,24 +118,19 @@ int wait_i2c_ready() {
 
 void i2c_start() {
 	//Set start bit and clear TWINT bit (notifies module to continue)
-	TWCR |= (1 << TWSTA) | (1 << TWINT);
+	TWCR = (1 << TWSTA) | (1 << TWINT) | (1 << TWEN);
 }
 
 void i2c_stop() {
 	wait_i2c_ready();
-	//Set stop bit
-	TWCR |= (1 << TWSTO);
-	//Clear TWINT bit (notifies module to continue)
-	TWCR |= (1 << TWINT);
+	//Set stop bit and TWINT bit
+	TWCR = (1 << TWSTO) | (1 << TWEN) | (1 << TWINT);
 }
-
 void i2c_write(uint8_t data) {
 	wait_i2c_ready();
-	//Clear start flag while not "clearing" TWINT
-	TWCR &= ~((1 << TWSTA) | (1 << TWINT));
 	TWDR = data;
 	//Clear interrupt
-	TWCR |= (1 << TWINT);
+	TWCR = (1 << TWINT) | (1 << TWEN);
 }
 
 uint8_t i2c_read() {
@@ -132,12 +139,11 @@ uint8_t i2c_read() {
 }
 
 void i2c_ack() {
-	TWCR |= (1 << TWEA) | (1 << TWINT);
+	TWCR = (1 << TWEA) | (1 << TWINT) | (1 << TWEN);
 }
 
 void i2c_nack() {
-	TWCR &= ~((1 << TWEA) | (1 << TWINT));
-	TWCR |= (1 << TWINT);
+	TWCR = (1 << TWINT) | (1 << TWEN);
 }
 
 //------------------------- ADC utils -------------------------
@@ -451,6 +457,162 @@ float aht_get_humidity() {
 	return (res * 100);
 }
 
+//------------------------- RTC utils -------------------------
+
+void get_time() {
+	uint8_t read_byte;
+	//Send word address of seconds
+	i2c_start();
+	i2c_write(RTC_ADDR | TW_WRITE);
+	i2c_write(0x03);
+	//Restart in read mode
+	wait_i2c_ready();
+	i2c_start();
+	i2c_write(RTC_ADDR | TW_READ);
+	i2c_ack();
+	read_byte = i2c_read();
+	time.sec[0] = ((read_byte >> 4) & 0b111) + '0';
+	time.sec[1] = (read_byte & 0b1111) + '0';
+	i2c_ack();
+	read_byte = i2c_read();
+	time.min[0] = ((read_byte >> 4) & 0b111) + '0';
+	time.min[1] = (read_byte & 0b1111) + '0';
+	i2c_ack();
+	read_byte = i2c_read();
+	time.hour[0] = ((read_byte >> 4) & 0b11) + '0';
+	time.hour[1] = (read_byte & 0b1111) + '0';
+	i2c_ack();
+	read_byte = i2c_read();
+	time.day[0] = ((read_byte >> 4) & 0b11) + '0';
+	time.day[1] = (read_byte & 0b1111) + '0';
+	i2c_ack();
+	//Weekday byte is unused
+	i2c_read();
+	i2c_ack();
+	read_byte = i2c_read();
+	time.month[0] = ((read_byte >> 4) & 0b1) + '0';
+	time.month[1] = (read_byte & 0b1111) + '0';
+	time.century = read_byte >> 7;
+	i2c_nack();
+	read_byte = i2c_read();
+	time.year[0] = ((read_byte >> 4) & 0b1111) + '0';
+	time.year[1] = (read_byte & 0b1111) + '0';
+	i2c_stop();
+}
+
+_Bool month_has_30_days() {
+	if (time.month[0] == '1') {
+		return (time.month[1] == '1');
+	}
+	return (time.month[1] == '4'
+		|| time.month[1] == '6'
+		|| time.month[1] == '9');
+}
+
+_Bool day_has_overflowed() {
+	if ((time.day[0] == '3') && (time.day[1] == '2'))
+		return (1);
+	if (month_has_30_days()) {
+		return ((time.day[0] == '3') && (time.day[1] == '1'));
+	}
+	//Deal with february
+	uint8_t year = (time.year[0] - '0') * 10 + time.year[1] - '0';
+	if (year % 4 == 0) {
+		return ((time.day[0] == '3') && (time.day[1] == '0'));
+	}
+	return ((time.day[0] == '2') && (time.day[1] == '9'));
+}
+
+void increment_time() {
+	time.sec[1]++;
+	if (time.sec[1] > '9') {
+		time.sec[1] = '0';
+		time.sec[0]++;
+	}
+	if (time.sec[0] > '5') {
+		time.sec[0] = '0';
+		time.min[1]++;
+	}
+	if (time.min[1] > '9') {
+		time.min[1] = '0';
+		time.min[0]++;
+	}
+	if (time.min[0] > '5') {
+		time.min[0] = '0';
+		time.hour[1]++;
+	}
+	if (time.hour[1] > '9') {
+		time.hour[1] = '0';
+		time.hour[0]++;
+	}
+	if (time.hour[0] == '2' && time.hour[1] == '4') {
+		time.hour[0] = '0';
+		time.hour[1] = '0';
+		time.day[1]++;
+	}
+	if (time.day[1] > '9') {
+		time.day[1] = '0';
+		time.day[0]++;
+	}
+	if (day_has_overflowed()) {
+		time.day[0] = '0';
+		time.day[1] = '1';
+	}
+	if (time.month[1] > '9') {
+		time.month[1] = '0';
+		time.month[0]++;
+	}
+	if ((time.month[0] == '1') && (time.month[1] == '2')) {
+		time.month[0] = '0';
+		time.month[1] = '1';
+	}
+	if (time.year[1] > '9') {
+		time.year[1] = '0';
+		time.year[0]++;
+	}
+	if (time.year[0] > '9') {
+		time.year[0] = '0';
+		time.century = !time.century;
+	}
+}
+
+//------------------------- Update display value -------------------------
+
+void update_value_adc() {
+	uint_display(adc_get_conv());
+}
+
+void update_value_temp_int() {
+	uint16_t adc_value = adc_get_conv();
+	uint_display(adc_value - 342);
+}
+
+void update_value_time() {
+	display_str[0] = time.hour[0];
+	display_str[1] = time.hour[1];
+	display_str[2] = time.min[0];
+	display_str[3] = time.min[1];
+}
+
+void update_value_date() {
+	display_str[0] = time.day[0];
+	display_str[1] = time.day[1];
+	display_str[2] = time.month[0];
+	display_str[3] = time.month[1];
+}
+
+void update_value_year() {
+	display_str[2] = time.year[0];
+	display_str[3] = time.year[1];
+	if (time.century) {
+		display_str[0] = '1';
+		display_str[1] = '9';
+	} else {
+		display_str[0] = '2';
+		display_str[1] = '0';
+	}
+}
+
 //------------------------- Mode settings -------------------------
 
 void set_mode_potentiometer() {
@@ -521,11 +683,40 @@ void unset_mode_rgb() {
 	spi_disable();
 }
 
+void set_mode_time(enum mode_e new_mode) {
+	get_time();
+	switch (new_mode) {
+	case hour:
+		update_value_time();
+		break;
+	case date:
+		update_value_date();
+		break;
+	case year:
+		update_value_year();
+		break;
+	}
+	//Activate timer1 to generate interrupts every second
+	OCR1A = 15625;
+	TIFR1 |= (1 << OCF1A);
+	TIMSK1 |= (1 << OCIE1A);
+	TCNT1 = 0;
+}
+
+void unset_mode_time() {
+	//Turn off interrupts on timer 1
+	TIMSK1 &= ~(1 << OCIE1A);
+}
+
 void set_decimal_point() {
 	decimal_mask = 0b0100;
 }
 
-void unset_decimal_point() {
+void set_time_dots() {
+	decimal_mask = 0b1010;
+}
+
+void unset_points() {
 	decimal_mask = 0;
 }
 
@@ -538,7 +729,13 @@ void set_mode(enum mode_e new_mode) {
 	case temp_c:
 	case temp_f:
 	case humidity:
-		unset_decimal_point();
+		unset_points();
+		break;
+	case hour:
+		unset_points();
+	case date:
+	case year:
+		unset_mode_time();
 		break;
 	}
 	display_n_led(new_mode);
@@ -566,22 +763,17 @@ void set_mode(enum mode_e new_mode) {
 	case humidity:
 		set_decimal_point();
 		break;
+	case hour:
+		set_time_dots();
+	case date:
+	case year:
+		set_mode_time(new_mode);
+		break;
 	default:
 		uint_display(new_mode);
 		break;
 	}
 	mode = new_mode;
-}
-
-//------------------------- Update display value -------------------------
-
-void update_value_adc() {
-	uint_display(adc_get_conv());
-}
-
-void update_value_temp_int() {
-	uint16_t adc_value = adc_get_conv();
-	uint_display(adc_value - 342);
 }
 
 //------------------------- Interrupts -------------------------
@@ -647,7 +839,8 @@ ISR(TIMER2_OVF_vect) {
 }
 
 ISR(TIMER1_COMPA_vect) {
-	if (mode == forty_two) {
+	switch (mode) {
+	case forty_two:
 		//Select next rgb effect
 		if (colour == 'R')
 			colour = 'G';
@@ -656,21 +849,38 @@ ISR(TIMER1_COMPA_vect) {
 		else if (colour == 'B')
 			colour = 'R';
 		set_all_rgb(colour);
-	} else if (mode == rainbow) {
+		break;
+	case rainbow:
 		wheel_spi(rgb_position);
 		rgb_position++;
-	} else if (mode == temp_c) {
+		break;
+	case temp_c:
 		float_display(aht_get_temp_c());
 		if (display_str[0] == ' ')
 			display_str[0] = 'C';
-	} else if (mode == temp_f) {
+			break;
+	case temp_f:
 		float_display(aht_get_temp_f());
 		if (display_str[0] == ' ')
 			display_str[0] = 'F';
-	} else if (mode == humidity) {
+		break;
+	case humidity:
 		float_display(aht_get_humidity());
 		if (display_str[0] == ' ')
 			display_str[0] = 'H';
+		break;
+	case hour:
+		increment_time();
+		update_value_time();
+		break;
+	case date:
+		increment_time();
+		update_value_date();
+		break;
+	case year:
+		increment_time();
+		update_value_year();
+		break;
 	}
 }
 
